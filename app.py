@@ -9,7 +9,7 @@ orders_file = 'orders.json'
 def load_orders():
     if os.path.exists(orders_file):
         with open(orders_file, 'r') as f:
-            return json.load(f)
+            return json.load(f, strict=False)
     return []
 
 def save_orders(orders):
@@ -50,13 +50,28 @@ def recall_orders():
     recalled_orders = [job for job in print_jobs if job['removed']]
     return jsonify(recalled_orders)
 
+@app.route('/api/reactivate', methods=['POST'])
+def reactivate_order():
+    order_id = request.json.get('id')
+    for order in print_jobs:
+        if order.get('id') == order_id:
+            order['removed'] = False
+            break
+    save_orders(print_jobs)
+    return jsonify({'message': 'Order reactivated'}), 200
+
 @app.route('/')
 def show_prints():
     return render_template_string('''
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Wing It On Wheels KDS</title>
+        <title>RaspKDS</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <meta name="apple-mobile-web-app-capable" content="yes">
+            <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+            <meta name="apple-mobile-web-app-title" content="RaspKDS">
+            <link rel="apple-touch-icon" href="/Users/mannyd/Desktop/icon.png">
         <style>
             body { 
                 background-color: black;
