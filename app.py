@@ -1,30 +1,52 @@
-from flask import Flask, request, jsonify, render_template_string
-import datetime
+from flask import Flask, request, jsonify
+from datetime import datetime, timedelta
 import json
 import os
+from itertools import count
 
 app = Flask(__name__)
 orders_file = 'orders.json'
+dismissed_orders_file = 'dismissedorders.json'
 
-def load_orders():
-    if os.path.exists(orders_file):
-        with open(orders_file, 'r') as f:
-            return json.load(f, strict=False)
+id_generator = count(start=1)
+
+def load_json_file(file_path):
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, 'r') as f:
+                return json.load(f)
+        except json.decoder.JSONDecodeError:
+            return []
     return []
 
-def save_orders(orders):
-    with open(orders_file, 'w') as f:
-        json.dump(orders, f, indent=4, default=str)
+def save_json_file(data, file_path):
+    with open(file_path, 'w') as f:
+        json.dump(data, f, indent=4, default=str)
+
+def load_orders():
+    return load_json_file(orders_file)
+
+def load_dismissed_orders():
+    return load_json_file(dismissed_orders_file)
+
+def assign_id(order):
+    order['id'] = next(id_generator)
 
 print_jobs = load_orders()
 
 @app.route('/api/print', methods=['POST'])
 def receive_print_job():
-    data = request.json.get('data', '')
-    timestamp = datetime.datetime.now()
-    print_jobs.append({'data': data, 'timestamp': timestamp, 'timestamp_raw': timestamp, 'removed': False, 'duration': None})
-    save_orders(print_jobs)
-    return jsonify({'message': 'Print job received'}), 200
+    items = request.json.get('items', [])
+    timestamp = datetime.now().strftime("%m-%d-%y %I:%M %p")
+    new_order = {
+        'items': items,
+        'timestamp': timestamp,
+        'removed': False
+    }
+    assign_id(new_order)
+    print_jobs.append(new_order)
+    save_json_file(print_jobs, orders_file)
+    return jsonify({'message': 'Print job received', 'id': new_order['id']}), 200
 
 @app.route('/api/orders', methods=['GET'])
 def get_orders():
@@ -34,31 +56,42 @@ def get_orders():
 @app.route('/api/remove', methods=['POST'])
 def remove_order():
     order_id = request.json.get('id')
-    if 0 <= order_id < len(print_jobs):
-        order = print_jobs[order_id]
-        dismissal_time = datetime.datetime.now()
-        order['removed'] = True
-        duration_seconds = int((dismissal_time - order['timestamp_raw']).total_seconds())
-        minutes, seconds = divmod(duration_seconds, 60)
-        order['duration'] = f"{minutes}m {seconds}s"
-        save_orders(print_jobs)
-        return jsonify({'message': 'Order removed', 'duration': order['duration']}), 200
+    global print_jobs
+    for i, order in enumerate(print_jobs):
+        if order['id'] == order_id:
+            dismissal_time = datetime.now()
+            duration_seconds = int((dismissal_time - datetime.strptime(order['timestamp'], "%m-%d-%y %I:%M %p")).total_seconds())
+            minutes, seconds = divmod(duration_seconds, 60)
+            order['duration'] = f"{minutes}m {seconds}s"
+            order['dismissal_time'] = dismissal_time.strftime("%m-%d-%y %I:%M %p")
+            order['removed'] = True
+            dismissed_orders = load_dismissed_orders()
+            dismissed_orders.append(order)
+            save_json_file(dismissed_orders, dismissed_orders_file)
+            del print_jobs[i]
+            save_json_file(print_jobs, orders_file)
+            return jsonify({'message': 'Order removed', 'duration': order['duration']}), 200
     return jsonify({'message': 'Order not found'}), 404
 
-@app.route('/api/recall', methods=['GET'])
+@app.route('/api/recall', methods=['POST'])
 def recall_orders():
-    recalled_orders = [job for job in print_jobs if job['removed']]
-    return jsonify(recalled_orders)
-
-@app.route('/api/reactivate', methods=['POST'])
-def reactivate_order():
     order_id = request.json.get('id')
-    for order in print_jobs:
-        if order.get('id') == order_id:
-            order['removed'] = False
+    dismissed_orders = load_dismissed_orders()
+    order_to_recall = None
+    for order in dismissed_orders:
+        if order['id'] == order_id:
+            order_to_recall = order
             break
-    save_orders(print_jobs)
-    return jsonify({'message': 'Order reactivated'}), 200
+    if order_to_recall:
+        dismissed_orders.remove(order_to_recall)
+        print_jobs.append(order_to_recall)
+        save_json_file(print_jobs, orders_file)
+        save_json_file(dismissed_orders, dismissed_orders_file)
+        return jsonify({'message': 'Order recalled', 'id': order_to_recall['id']}), 200
+    return jsonify({'message': 'Order not found'}), 404
+
+
+
 
 @app.route('/')
 def show_prints():
@@ -260,17 +293,18 @@ function removeOrder(index) {
             });
 
             function updateTimers() {
-                document.querySelectorAll('.timer').forEach(function(timer) {
-                    const timeReceived = new Date(timer.getAttribute('data-time-received'));
+                document.querySelectorAll('.order').forEach(order => {
+                    const orderTimestamp = new Date(order.dataset.timestamp);
                     const now = new Date();
-                    const diff = now - timeReceived;
-                    const minutes = Math.floor(diff / 60000);
-                    const seconds = Math.floor((diff % 60000) / 1000);
-                    timer.textContent = minutes + ":" + (seconds < 10 ? '0' : '') + seconds;
+                    const elapsed = now - orderTimestamp;
+                    const minutes = Math.floor(elapsed / 60000);
+                    const seconds = Math.floor((elapsed % 60000) / 1000);
+                    order.querySelector('.timer').textContent = '${minutes}m ${seconds}s';
                 });
             }
 
-            setInterval(fetchOrders, 1000);
+            	setInterval(updateTimers, 1000);
+		setInterval(fetchOrders, 1000);
             document.addEventListener('DOMContentLoaded', fetchOrders);
         </script>
     </body>
@@ -278,4 +312,4 @@ function removeOrder(index) {
     ''')
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True, host='0.0.0.0')
